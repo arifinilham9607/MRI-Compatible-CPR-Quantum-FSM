@@ -1,7 +1,3 @@
-----------------------------------------------------------------------------------
--- File: quantum_cpr_tb.vhd
--- Deskripsi: Testbench untuk memverifikasi Matrix Transisi Kuantum
-----------------------------------------------------------------------------------
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 
