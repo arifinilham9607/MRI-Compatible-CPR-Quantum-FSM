@@ -1,14 +1,12 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
+using System.Linq;
 
 namespace CprMicroSignalSim
 {
-    // =========================================================
-    // BAGIAN 1: LOGIKA FSM & SENSOR FISIKA
-    // =========================================================
     public static class MicroController
     {
         public enum State { IDLE, COMPRESS, VENTILATE, SHOCK_STANDBY }
@@ -16,130 +14,177 @@ namespace CprMicroSignalSim
         public static int CompCount = 0;
         public static int VentCount = 0;
 
-        // Data Sensor
-        public static string Sensor_D = "00";
-        public static string Sensor_R = "10";
-        public static bool Sensor_RC = true;
-        public static string Sensor_P = "00";
+        public static string Sensor_D = "00"; 
+        public static string Sensor_R = "10"; 
+        public static bool Sensor_RC = true;  
+        public static string Sensor_P = "00"; 
         public static bool Sensor_AMSA = false;
 
-        // Variabel Fisika untuk Grafik
-        public static float CurrentDepthVal = 0;
-        public static float TargetDepth = 0;
+        // Variabel untuk Simulasi Waveform FSM
+        public class StatePoint
+        {
+            public int Time;
+            public State FSMState;
+        }
+        public static List<StatePoint> WaveformHistory = new List<StatePoint>();
+        public static int CurrentTimeTick = 0;
 
-        // Output Aktuator
         public static bool Out_Metro = false;
         public static bool Out_VentGuide = false;
         public static bool Out_Quality = false;
         public static bool Out_Shock = false;
 
+        public static void Initialize()
+        {
+            CurrentState = State.IDLE;
+            CompCount = 0;
+            VentCount = 0;
+            CurrentTimeTick = 0;
+            WaveformHistory.Clear();
+            WaveformHistory.Add(new StatePoint { Time = 0, FSMState = State.IDLE });
+        }
+
         public static void ClockTick()
         {
-            // 1. Logika Output Aktuator
             Out_Metro = (CurrentState == State.COMPRESS);
             Out_VentGuide = (CurrentState == State.VENTILATE);
             Out_Quality = (Sensor_D == "10" && Sensor_R == "10" && Sensor_RC);
             Out_Shock = ((Sensor_P == "01" || Sensor_P == "10") && Sensor_AMSA);
 
-            // 2. Simulasi Fisika Dada
-            if (CurrentDepthVal > 0)
-                CurrentDepthVal -= 5f;
+            CurrentTimeTick++;
+        }
 
-            if (CurrentDepthVal < 0) CurrentDepthVal = 0;
+        private static void UpdateState(State newState)
+        {
+            if (newState != CurrentState)
+            {
+                // Merekam transisi state di tick saat ini (garis vertikal)
+                WaveformHistory.Add(new StatePoint { Time = CurrentTimeTick, FSMState = CurrentState });
+
+                CurrentState = newState;
+
+                // Merekam state baru di tick saat ini (garis horizontal baru)
+                WaveformHistory.Add(new StatePoint { Time = CurrentTimeTick, FSMState = CurrentState });
+            }
+            // Merekam kelanjutan state di tick berikutnya
+            WaveformHistory.Add(new StatePoint { Time = CurrentTimeTick + 1, FSMState = CurrentState });
         }
 
         public static void Input_Compression(string type)
         {
+            // Atur Input Sensor berdasarkan Jenis Kompresi
             switch (type)
             {
-                case "BAIK": TargetDepth = 55; break;
-                case "DANGKAL": TargetDepth = 30; break;
-                case "LEANING": TargetDepth = 55; break;
+                case "BAIK": Sensor_D = "10"; Sensor_RC = true; break;      
+                case "DANGKAL": Sensor_D = "01"; Sensor_RC = true; break;  
+                case "LEANING": Sensor_D = "10"; Sensor_RC = false; break;  
             }
-            CurrentDepthVal = TargetDepth;
 
-            if (CurrentState == State.SHOCK_STANDBY) return;
+            // PRIORITAS 1: SHOCK INTERRUPT
+            if (Out_Shock)
+            {
+                UpdateState(State.SHOCK_STANDBY); // Transisi ke SHOCK_STANDBY jika kondisi terpenuhi
+                return;
+            }
 
-            if (CurrentState == State.IDLE) CurrentState = State.COMPRESS;
-
-            if (CurrentState == State.COMPRESS)
+            // PRIORITAS 2: LOGIKA SEKUENSIAL
+            if (CurrentState == State.IDLE)
+            {
+                UpdateState(State.COMPRESS);
+                CompCount = 1;
+                VentCount = 0;
+            }
+            else if (CurrentState == State.COMPRESS)
             {
                 CompCount++;
-                switch (type)
-                {
-                    case "BAIK": Sensor_D = "10"; Sensor_RC = true; break;
-                    case "DANGKAL": Sensor_D = "01"; Sensor_RC = true; break;
-                    case "LEANING": Sensor_D = "10"; Sensor_RC = false; break;
-                }
-
-                if (Out_Shock) { CurrentState = State.SHOCK_STANDBY; return; }
-
                 if (CompCount >= 30)
                 {
-                    CurrentState = State.VENTILATE;
-                    CompCount = 0; VentCount = 0;
+                    UpdateState(State.VENTILATE);
+                    CompCount = 0;
+                    VentCount = 0; // Mulai ventilasi di hitungan 1
                 }
+            }
+            else if (CurrentState == State.VENTILATE)
+            {
+                // Input Kompresi di state VENTILATE diabaikan (hanya ventilasi yang dihitung)
             }
         }
 
         public static void Input_Ventilation()
         {
+            // Prioritas Shock di sini tetap berlaku, tetapi tombol ini tidak mengubah Sensor_D/RC
+            if (Out_Shock) return;
+
             if (CurrentState == State.VENTILATE)
             {
                 VentCount++;
                 if (VentCount >= 2)
                 {
-                    CurrentState = State.COMPRESS;
-                    VentCount = 0; CompCount = 0;
+                    UpdateState(State.COMPRESS);
+                    VentCount = 0;
+                    CompCount = 0; // Kompresi berikutnya akan dihitung saat Input_Compression selanjutnya
                 }
             }
-            Sensor_D = "00"; Sensor_RC = true;
+
+            // Atur ulang kedalaman/recoil ke status aman (Full Recoil) setelah ventilasi
+            Sensor_D = "00";
+            Sensor_RC = true;
         }
 
         public static void Input_ShockButton()
         {
             if (CurrentState == State.SHOCK_STANDBY)
             {
-                CurrentState = State.COMPRESS;
+                // Setelah SHOCK (Tombol Shock ditekan), sistem kembali ke COMPRESS
+                UpdateState(State.COMPRESS);
                 CompCount = 1;
-                Sensor_P = "00"; Sensor_AMSA = false;
+                Sensor_P = "00"; Sensor_AMSA = false; // Reset kondisi Shockable
             }
         }
 
         public static void Toggle_SimulateVF()
         {
-            if (Sensor_P == "00") { Sensor_P = "10"; Sensor_AMSA = true; }
-            else { Sensor_P = "00"; Sensor_AMSA = false; }
+            // Mengubah kondisi VF/VT dan AMSA untuk memicu Out_Shock
+            if (Sensor_P == "00")
+            {
+                Sensor_P = "10"; // Mengubah ke VF (Shockable)
+                Sensor_AMSA = true; // Menganggap AMSA Tinggi
+                if (CurrentState != State.SHOCK_STANDBY) UpdateState(State.SHOCK_STANDBY);
+            }
+            else
+            {
+                Sensor_P = "00";
+                Sensor_AMSA = false;
+                if (CurrentState == State.SHOCK_STANDBY) UpdateState(State.COMPRESS); // Kembali ke COMPRESS jika di-reset
+            }
         }
     }
 
     // =========================================================
-    // BAGIAN 2: UI RESPONSIVE (LAYOUT ADAPTIF)
+    // BAGIAN 2: UI DAN VISUALISASI GRAFIK (Waveform Digital)
     // =========================================================
     public partial class Form1 : Form
     {
         private Timer guiTimer;
-        private List<float> waveEKG = new List<float>();
-        private List<float> waveComp = new List<float>();
         private int tick = 0;
+        private Dictionary<MicroController.State, float> stateYMap;
 
         // Komponen Layout Utama
         private TableLayoutPanel mainLayout;
         private PictureBox graphPanel;
-        // PERBAIKAN: Menggunakan PictureBox, bukan Panel, agar tidak berkedip
         private PictureBox infoPanel;
         private FlowLayoutPanel buttonPanel;
 
         public Form1()
         {
+            MicroController.Initialize();
             InitializeComponentManual();
-            // Double buffer agar grafik tidak kedip saat resize
             this.SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.DoubleBuffer, true);
         }
 
         private void InitializeComponentManual()
         {
-            this.Text = "MRI-Compatible Patient Monitor (Responsive)";
+            this.Text = "MRI-Compatible CPR RFSM Simulator";
             this.Size = new Size(1024, 768);
             this.WindowState = FormWindowState.Maximized;
             this.BackColor = Color.FromArgb(240, 240, 240);
@@ -172,7 +217,7 @@ namespace CprMicroSignalSim
             midSection.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30F)); // Info 30%
             mainLayout.Controls.Add(midSection, 0, 1);
 
-            // -> Grafik
+            // -> Grafik (Hanya untuk Digital Waveform FSM)
             graphPanel = new PictureBox();
             graphPanel.Dock = DockStyle.Fill;
             graphPanel.BackColor = Color.White;
@@ -180,7 +225,7 @@ namespace CprMicroSignalSim
             graphPanel.Paint += GraphPanel_Paint;
             midSection.Controls.Add(graphPanel, 0, 0);
 
-            // -> Info Panel (PERBAIKAN: Menggunakan PictureBox)
+            // -> Info Panel
             infoPanel = new PictureBox();
             infoPanel.Dock = DockStyle.Fill;
             infoPanel.BackColor = Color.FromArgb(230, 230, 230);
@@ -196,18 +241,39 @@ namespace CprMicroSignalSim
             mainLayout.Controls.Add(buttonPanel, 0, 2);
 
             // Tambah Tombol
-            AddButton("KOMPRESI (BAIK)", Color.SeaGreen, () => MicroController.Input_Compression("BAIK"));
-            AddButton("KOMPRESI (DANGKAL)", Color.IndianRed, () => MicroController.Input_Compression("DANGKAL"));
-            AddButton("KOMPRESI (LEANING)", Color.DarkOrange, () => MicroController.Input_Compression("LEANING"));
-            AddButton("VENTILASI (V)", Color.DodgerBlue, () => MicroController.Input_Ventilation());
-            AddButton("SIMULASI VF", Color.Gray, () => MicroController.Toggle_SimulateVF());
-            AddButton("TOMBOL SHOCK", Color.Black, () => MicroController.Input_ShockButton());
+            AddButton("COMPRESS (GOOD)", Color.SeaGreen, () => MicroController.Input_Compression("BAIK"));
+            AddButton("COMPRESS (SHORT)", Color.IndianRed, () => MicroController.Input_Compression("DANGKAL"));
+            AddButton("COMPRESS (LEANING)", Color.DarkOrange, () => MicroController.Input_Compression("LEANING"));
+            AddButton("VENTILATE (V)", Color.DodgerBlue, () => MicroController.Input_Ventilation());
+            AddButton("SIMULATE VF", Color.Purple, () => MicroController.Toggle_SimulateVF());
+            AddButton("SHOCK!", Color.Black, () => MicroController.Input_ShockButton());
+
+            // Tombol Reset Penuh
+            Button btnReset = new Button();
+            btnReset.Text = "FULL RESET";
+            btnReset.Size = new Size(180, 60);
+            btnReset.BackColor = Color.Gray;
+            btnReset.ForeColor = Color.White;
+            btnReset.FlatStyle = FlatStyle.Flat;
+            btnReset.Font = new Font("Segoe UI", 10, FontStyle.Bold);
+            btnReset.Margin = new Padding(10);
+            btnReset.Click += (s, e) => MicroController.Initialize();
+            buttonPanel.Controls.Add(btnReset);
 
             // 5. TIMER
             guiTimer = new Timer();
-            guiTimer.Interval = 30;
+            guiTimer.Interval = 30; // Kecepatan update UI (tick/30ms)
             guiTimer.Tick += GuiTimer_Tick;
             guiTimer.Start();
+
+            // Inisialisasi State Y Map untuk Grafik (0.2f=Paling Atas, 0.9f=Paling Bawah)
+            stateYMap = new Dictionary<MicroController.State, float>
+            {
+                { MicroController.State.IDLE, 0.2f },
+                { MicroController.State.COMPRESS, 0.45f },
+                { MicroController.State.VENTILATE, 0.7f },
+                { MicroController.State.SHOCK_STANDBY, 0.9f }
+            };
         }
 
         private void AddButton(string text, Color bg, Action onClick)
@@ -227,26 +293,12 @@ namespace CprMicroSignalSim
         private void GuiTimer_Tick(object sender, EventArgs e)
         {
             MicroController.ClockTick();
-
-            // --- DATA GRAFIK ---
-            // EKG
-            float ekgVal = 0;
-            if (MicroController.Sensor_P == "10") ekgVal = new Random().Next(-50, 50);
-            else ekgVal = (tick % 30 == 0) ? -10 : (tick % 30 == 2) ? 100 : (tick % 30 == 5) ? -20 : 0;
-
-            waveEKG.Add(ekgVal);
-            if (waveEKG.Count > 300) waveEKG.RemoveAt(0);
-
-            // Kompresi
-            waveComp.Add(MicroController.CurrentDepthVal);
-            if (waveComp.Count > 300) waveComp.RemoveAt(0);
-
             tick++;
             graphPanel.Invalidate();
             infoPanel.Invalidate();
         }
 
-        // === MENGGAMBAR GRAFIK ===
+        // === MENGGAMBAR GRAFIK DIGITAL FSM ===
         private void GraphPanel_Paint(object sender, PaintEventArgs e)
         {
             Graphics g = e.Graphics;
@@ -254,38 +306,95 @@ namespace CprMicroSignalSim
             int w = graphPanel.Width;
             int h = graphPanel.Height;
 
-            // Grid
-            Pen gridPen = new Pen(Color.FromArgb(220, 220, 220));
-            for (int i = 0; i < w; i += 30) g.DrawLine(gridPen, i, 0, i, h);
-            for (int i = 0; i < h; i += 30) g.DrawLine(gridPen, 0, i, w, i);
+            // 1. Setup Area Gambar
+            int marginX = 100;
+            int marginY = 30;
+            int graphWidth = w - marginX - 10;
+            int graphHeight = h - marginY * 2;
 
-            // Grafik EKG
-            float midEKG = h * 0.25f;
-            Color ekgColor = MicroController.Out_Shock ? Color.Red : Color.Green;
-            DrawResponsiveLine(g, waveEKG, ekgColor, midEKG, w);
-            g.DrawString("ECG LEAD II", new Font("Segoe UI", 9, FontStyle.Bold), Brushes.Black, 10, 10);
+            // Skala X: Total waktu yang akan ditampilkan
+            // Sesuaikan agar seluruh riwayat terlihat
+            int maxTicks = Math.Max(100, MicroController.CurrentTimeTick + 10);
+            float xStep = (float)graphWidth / maxTicks;
 
-            // Grafik Kompresi
-            float midComp = h * 0.75f;
-            DrawResponsiveLine(g, waveComp, Color.Blue, midComp, w);
-            g.DrawString("COMPRESSION WAVEFORM", new Font("Segoe UI", 9, FontStyle.Bold), Brushes.Black, 10, midComp - 80);
+            // Bersihkan Area
+            g.Clear(Color.White);
+
+            // 2. Garis Referensi Horizontal (State)
+            using (Pen refPen = new Pen(Color.LightGray, 1))
+            using (Font labelFont = new Font("Segoe UI", 9, FontStyle.Bold))
+            {
+                foreach (var kvp in stateYMap)
+                {
+                    float y = marginY + (1 - kvp.Value) * graphHeight;
+                    g.DrawLine(refPen, marginX, y, graphWidth + marginX, y);
+                    g.DrawString(kvp.Key.ToString() + " (" + GetStateBinary(kvp.Key) + ")",
+                                 labelFont,
+                                 Brushes.Black,
+                                 5, y - 8);
+                }
+            }
+
+            // 3. Menggambar Waveform Digital (Seperti Vivado)
+            if (MicroController.WaveformHistory.Count < 2) return;
+
+            using (Pen wavePen = new Pen(Color.Green, 2)) // Menggunakan warna hijau terang (seperti Vivado)
+            {
+                for (int i = 0; i < MicroController.WaveformHistory.Count - 1; i++)
+                {
+                    MicroController.StatePoint p1 = MicroController.WaveformHistory[i];
+                    MicroController.StatePoint p2 = MicroController.WaveformHistory[i + 1];
+
+                    // Posisi Y (tinggi) untuk State p1 dan p2
+                    float y1 = marginY + (1 - stateYMap[p1.FSMState]) * graphHeight;
+                    float y2 = marginY + (1 - stateYMap[p2.FSMState]) * graphHeight;
+
+                    // Posisi X di layar (berdasarkan tick)
+                    float xScreen1 = marginX + p1.Time * xStep;
+                    float xScreen2 = marginX + p2.Time * xStep;
+
+                    // Garis Horizontal (Hold State)
+                    g.DrawLine(wavePen, xScreen1, y1, xScreen2, y1);
+
+                    // Garis Vertikal (Transition) - Hanya jika ada perubahan state
+                    if (p1.FSMState != p2.FSMState)
+                    {
+                        g.DrawLine(wavePen, xScreen1, y1, xScreen1, y2);
+                    }
+                }
+
+                // Tambahkan titik akhir agar waveform terlihat lengkap hingga CurrentTimeTick
+                MicroController.StatePoint lastP = MicroController.WaveformHistory.Last();
+                float lastY = marginY + (1 - stateYMap[lastP.FSMState]) * graphHeight;
+                float lastX = marginX + lastP.Time * xStep;
+
+                // Garis horizontal dari titik terakhir hingga waktu saat ini
+                g.DrawLine(wavePen, lastX, lastY, marginX + MicroController.CurrentTimeTick * xStep, lastY);
+            }
+
+            // 4. Time Marker (Indikator Waktu Saat Ini)
+            int currentX = marginX + MicroController.CurrentTimeTick * (int)xStep;
+            using (Pen timePen = new Pen(Color.Red, 1) { DashStyle = DashStyle.Dash })
+            {
+                g.DrawLine(timePen, currentX, marginY, currentX, graphHeight + marginY);
+            }
+            g.DrawString($"T={MicroController.CurrentTimeTick}", new Font("Segoe UI", 8), Brushes.Red, currentX, graphHeight + marginY + 5);
+
+            g.DrawString("FSM STATE WAVEFORM", new Font("Segoe UI", 10, FontStyle.Bold), Brushes.Black, 10, 10);
         }
 
-        private void DrawResponsiveLine(Graphics g, List<float> data, Color c, float yOffset, int width)
+        private string GetStateBinary(MicroController.State state)
         {
-            if (data.Count < 2) return;
-            Pen p = new Pen(c, 2);
-
-            float xStep = (float)width / 300f;
-
-            for (int i = 0; i < data.Count - 1; i++)
+            switch (state)
             {
-                g.DrawLine(p,
-                    i * xStep, yOffset - data[i],
-                    (i + 1) * xStep, yOffset - data[i + 1]);
+                case MicroController.State.IDLE: return "00";
+                case MicroController.State.COMPRESS: return "01";
+                case MicroController.State.VENTILATE: return "10";
+                case MicroController.State.SHOCK_STANDBY: return "";
+                default: return "XX";
             }
         }
-
+                
         // === MENGGAMBAR PANEL INFO ===
         private void InfoPanel_Paint(object sender, PaintEventArgs e)
         {
@@ -297,7 +406,7 @@ namespace CprMicroSignalSim
             int xCenter = w / 2;
 
             // 1. State Box
-            DrawBox(g, "SYSTEM STATE", MicroController.CurrentState.ToString(), xCenter, yPos, Color.White, Color.Black);
+            DrawBox(g, "SYSTEM STATE (S1S0)", MicroController.CurrentState.ToString() + " (" + GetStateBinary(MicroController.CurrentState) + ")", xCenter, yPos, Color.White, Color.Black);
             yPos += 90;
 
             // 2. Counter
@@ -312,11 +421,14 @@ namespace CprMicroSignalSim
             yPos += 60;
 
             // 4. Quality & Shock
-            bool q = MicroController.Out_Quality;
-            bool s = MicroController.Out_Shock;
+            string qText = MicroController.Out_Quality ? "GOOD" : (MicroController.CurrentState == MicroController.State.COMPRESS ? "POOR" : "N/A");
+            Color qColor = MicroController.Out_Quality ? Color.SeaGreen : Color.Firebrick;
+            if (MicroController.CurrentState == MicroController.State.IDLE || MicroController.CurrentState == MicroController.State.VENTILATE) qColor = Color.Gray;
 
-            DrawStatusFlagResponsive(g, "QUALITY", q ? "GOOD" : "POOR", xCenter, yPos, q ? Color.SeaGreen : Color.Firebrick);
+            DrawStatusFlagResponsive(g, "QUALITY", qText, xCenter, yPos, qColor);
             yPos += 50;
+
+            bool s = MicroController.Out_Shock;
             DrawStatusFlagResponsive(g, "SHOCK", s ? "ADVISED" : "NO", xCenter, yPos, s ? Color.Red : Color.Gray);
         }
 
