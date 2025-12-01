@@ -1,8 +1,3 @@
-----------------------------------------------------------------------------------
--- File: quantum_cpr_logic.vhd
--- Deskripsi: Implementasi FPGA untuk Quantum State Transition Matrix (Step 5.3)
---            dan Gerbang Logika Kuantum Reversibel (Step 7)
-----------------------------------------------------------------------------------
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 
@@ -43,10 +38,6 @@ architecture Behavioral of quantum_cpr_logic is
 
 begin
     
-    -- =================================================================
-    -- BAGIAN 1: IMPLEMENTASI QUANTUM STATE TRANSITION (STEP 5.3)
-    -- Ini mensimulasikan evolusi state qubit pada setiap clock cycle.
-    -- =================================================================
     process(CLK, RESET)
     begin
         if RESET = '1' then
@@ -100,11 +91,6 @@ begin
     -- Teruskan nilai state internal ke port output
     S1_out <= S1;
     S0_out <= S0;
-
-    -- =================================================================
-    -- BAGIAN 2: IMPLEMENTASI GERBANG KUANTUM AKTUATOR (STEP 7)
-    -- Logika ini bekerja secara paralel (Kombinasional)
-    -- =================================================================
     
     -- 1. Aktuator Q_SCORE (Logika Multi-Controlled Toffoli)
     -- Syarat: D=10, R=10, RC=1
